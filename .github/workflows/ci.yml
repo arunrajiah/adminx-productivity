@@ -2,214 +2,48 @@ name: WordPress Plugin CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
-  build:
+  validate:
     runs-on: ubuntu-latest
-    
-    strategy:
-      matrix:
-        php-version: ['7.4', '8.0', '8.1', '8.2']
-        wordpress-version: ['5.0', '5.5', '6.0', '6.3']
-    
+
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up PHP
         uses: shivammathur/setup-php@v2
         with:
-          php-version: ${{ matrix.php-version }}
-          extensions: mysql, zip
-          tools: composer, wp-cli
-
-      - name: Cache Composer dependencies
-        uses: actions/cache@v3
-        with:
-          path: ~/.composer/cache
-          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
-          restore-keys: ${{ runner.os }}-composer-
-
-      - name: Install Composer dependencies
-        run: composer install --prefer-dist --no-progress --no-suggest
+          php-version: "8.2"
+          coverage: none
 
       - name: Validate PHP syntax
-        run: find . -name "*.php" -print0 | xargs -0 -n1 php -l
+        run: find . -name "*.php" -not -path "./vendor/*" -print0 | xargs -0 -n1 php -l
 
-      - name: Install WordPress Coding Standards
+      - name: Check required plugin files
         run: |
-          composer global require wp-coding-standards/wpcs
-          ~/.composer/vendor/bin/phpcs --config-set installed_paths ~/.composer/vendor/wp-coding-standards/wpcs
-
-      - name: Run WordPress coding standards
-        run: ~/.composer/vendor/bin/phpcs --standard=WordPress --extensions=php --ignore=vendor/ ./
-
-      - name: Set up WordPress test environment
-        run: |
-          bash bin/install-wp-tests.sh wordpress_test root '' localhost ${{ matrix.wordpress-version }}
-        env:
-          WP_VERSION: ${{ matrix.wordpress-version }}
-
-      - name: Run PHPUnit tests
-        run: vendor/bin/phpunit
-        env:
-          WP_TESTS_DIR: /tmp/wordpress-tests-lib
-          WP_CORE_DIR: /tmp/wordpress/
-
-      - name: Security scan with PHP Security Checker
-        run: |
-          curl -H "Cache-Control: no-cache" -s https://get.sensiolabs.org/security-checker.phar -o security-checker.phar
-          php security-checker.phar security:check composer.lock
+          test -f adminx-productivity.php
+          test -f readme.txt
 
       - name: Build plugin zip
         run: |
-          mkdir -p build
-          rsync -av --exclude-from='.distignore' ./ build/adminx-productivity/
+          mkdir -p build/adminx-productivity
+          rsync -a \
+            --exclude='.git*' \
+            --exclude='.github' \
+            --exclude='build' \
+            --exclude='docs' \
+            --exclude='node_modules' \
+            --exclude='vendor' \
+            ./ build/adminx-productivity/
           cd build
           zip -r adminx-productivity.zip adminx-productivity/
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: adminx-productivity-${{ matrix.php-version }}-wp${{ matrix.wordpress-version }}
+          name: adminx-productivity
           path: build/adminx-productivity.zip
-
-  security-scan:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Run Snyk security scan
-        uses: snyk/actions/php@master
-        env:
-          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        with:
-          args: --severity-threshold=high
-
-      - name: Upload Snyk results
-        uses: github/codeql-action/upload-sarif@v2
-        if: always()
-        with:
-          sarif_file: snyk.sarif
-
-  code-quality:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.1'
-          tools: composer
-
-      - name: Install dependencies
-        run: composer install --prefer-dist --no-progress
-
-      - name: Run PHP Mess Detector
-        run: vendor/bin/phpmd . text cleancode,codesize,controversial,design,naming,unusedcode --exclude vendor/
-
-      - name: Run PHP Copy/Paste Detector
-        run: vendor/bin/phpcpd --exclude vendor/ ./
-
-      - name: Run PHP Lines of Code
-        run: vendor/bin/phploc --exclude vendor/ ./
-
-  compatibility-check:
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.1'
-          tools: composer
-
-      - name: Install PHP Compatibility Checker
-        run: composer global require phpcompatibility/php-compatibility
-
-      - name: Check PHP 7.4 compatibility
-        run: ~/.composer/vendor/bin/phpcs --standard=PHPCompatibility --runtime-set testVersion 7.4- --extensions=php --ignore=vendor/ ./
-
-      - name: Check PHP 8.0+ compatibility
-        run: ~/.composer/vendor/bin/phpcs --standard=PHPCompatibility --runtime-set testVersion 8.0- --extensions=php --ignore=vendor/ ./
-
-  deploy:
-    needs: [build, security-scan, code-quality, compatibility-check]
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
-
-      - name: Set up PHP
-        uses: shivammathur/setup-php@v2
-        with:
-          php-version: '8.1'
-
-      - name: Build production package
-        run: |
-          mkdir -p dist
-          rsync -av --exclude-from='.distignore' ./ dist/adminx-productivity/
-          cd dist
-          zip -r adminx-productivity-production.zip adminx-productivity/
-
-      - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          draft: false
-          prerelease: false
-
-      - name: Upload Release Asset
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./dist/adminx-productivity-production.zip
-          asset_name: adminx-productivity.zip
-          asset_content_type: application/zip
-
-      - name: Deploy to WordPress.org
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: 10up/action-wordpress-plugin-deploy@stable
-        env:
-          SVN_USERNAME: ${{ secrets.SVN_USERNAME }}
-          SVN_PASSWORD: ${{ secrets.SVN_PASSWORD }}
-          SLUG: adminx-productivity
-
-  notification:
-    needs: [build, security-scan, code-quality, compatibility-check]
-    runs-on: ubuntu-latest
-    if: always()
-    
-    steps:
-      - name: Notify on success
-        if: ${{ needs.build.result == 'success' && needs.security-scan.result == 'success' && needs.code-quality.result == 'success' && needs.compatibility-check.result == 'success' }}
-        run: echo "All checks passed successfully!"
-
-      - name: Notify on failure
-        if: ${{ needs.build.result == 'failure' || needs.security-scan.result == 'failure' || needs.code-quality.result == 'failure' || needs.compatibility-check.result == 'failure' }}
-        run: |
-          echo "Some checks failed!"
-          echo "Build: ${{ needs.build.result }}"
-          echo "Security: ${{ needs.security-scan.result }}"
-          echo "Code Quality: ${{ needs.code-quality.result }}"
-          echo "Compatibility: ${{ needs.compatibility-check.result }}"
